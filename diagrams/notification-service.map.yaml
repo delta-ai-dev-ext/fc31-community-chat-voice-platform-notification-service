@@ -1,0 +1,266 @@
+schema_version: 2
+diagram_id: notification-service
+mode: service
+orientation: LR
+scope: notification_service service view; four consumed Kafka topics, one produced
+  topic, member REST API, owned PostgreSQL store and Resend email provider.
+sources:
+- path: docs/architecture.md
+  sha256: bc87b729a5050660754ff5f957cde2a033a1f81b111e63e5f1afdd81ebb177a2
+- path: docs/decisions/ADR-001-transactional-outbox-for-notification-events.md
+  sha256: 96021736e58805d412733cca5d2a4cd450a8a9d3bd02dd7b0d05eeab0482c489
+- path: docs/openapi_spec.yaml
+  sha256: d235c4cc01ee1158c9f841ca9606dacadbe606fc055a3f9bfa94c619979a67bb
+- path: docs/user_stories.md
+  sha256: fc9a722d3eb83f727966e79c5ecbc55b3e8ebd21c0eb68d3dd10c1fd18fbc5c7
+entities:
+- id: kafka
+  label: Kafka
+  kind: broker
+  technology: kafka
+  role: outbound
+  row: 75
+  evidence:
+  - path: docs/architecture.md
+    quote: One shared consumer group reading `identity_events`, `moderation_events`
+      (EVT-004, EVT-006), `social_events` (EVT-007), `message_events` (EVT-009).
+- id: members
+  label: Members
+  kind: annotation
+  role: inbound
+  row: 588
+  evidence:
+  - path: docs/user_stories.md
+    quote: '**Member**: an authenticated user with an access token issued by identity_service.'
+  - path: docs/openapi_spec.yaml
+    quote: In-app notification inbox and per-kind notification preferences for the
+- id: svc
+  name: notification_service
+  label: Notification service
+  kind: service
+  technology: kubernetes-pod
+  role: service
+  row: 540
+  evidence:
+  - path: docs/architecture.md
+    quote: '`notification_service` sends the moderation notice to the affected member.'
+  - path: docs/architecture.md
+    quote: 'Event-driven fan-in service: it consumes five domain-event contracts,
+      turns them into member-facing notifications, and fans out live push events and
+      transactional emails.'
+- id: db
+  label: Notification PostgreSQL
+  kind: database
+  technology: postgresql
+  role: outbound
+  row: 498
+  evidence:
+  - path: docs/architecture.md
+    quote: All tables are owned and defined by this service.
+  - path: docs/architecture.md
+    quote: '**Throttling:** at most one mention email per recipient per 15-minute
+      window; the window is persisted in PostgreSQL so it survives restarts.'
+- id: resend
+  label: Resend
+  kind: annotation
+  external: true
+  external_role: dependency
+  role: outbound
+  row: 624
+  evidence:
+  - path: docs/architecture.md
+    quote: Send notification emails via Resend according to per-user preferences,
+      only to verified emails of active accounts
+  - path: docs/architecture.md
+    quote: Resend integration:** official SDK, idempotency key = notification id
+relationships:
+- id: r-caller
+  source: members
+  target: svc
+  type: request
+  interaction:
+    channel: direct
+    purpose: inbox listing, read state and per-kind preferences
+    protocol: REST
+    exchange_id: member-notification-api
+  evidence:
+  - path: docs/architecture.md
+    quote: REST API layer
+  - path: docs/user_stories.md
+    quote: '`GET /notifications` returns the caller''s notifications'
+- id: r-db
+  source: svc
+  target: db
+  type: ownership
+  evidence:
+  - path: docs/architecture.md
+    quote: All tables are owned and defined by this service.
+  - path: docs/architecture.md
+    quote: '**Transactional outbox:** the notification insert and the outbox row commit
+      together'
+- id: r-resend
+  source: svc
+  target: resend
+  type: request
+  interaction:
+    channel: direct
+    purpose: notification email delivery
+    protocol: Resend
+    exchange_id: resend-send-email
+  evidence:
+  - path: docs/architecture.md
+    quote: Send notification emails via Resend according to per-user preferences,
+      only to verified emails of active accounts
+  - path: docs/architecture.md
+    quote: Resend integration:** official SDK, idempotency key = notification id
+- id: r-prod
+  source: svc
+  target: kafka
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: live push of persisted notifications
+  messaging:
+    role: producer
+    topic: notification_events
+  evidence:
+  - path: docs/architecture.md
+    quote: EVT-011 `notification_created` (topic `notification_events`, key `recipient_user_id`)
+  - path: docs/architecture.md
+    quote: Published for every persisted notification, carrying the notification snapshot
+      and the recipient's current `unread_count`.
+- id: r-cons-identity
+  source: kafka
+  target: svc
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: recipient contact projection
+  messaging:
+    role: consumer
+    topic: identity_events
+  evidence:
+  - path: docs/architecture.md
+    quote: EVT-001 `user_account_changed` (topic `identity_events`, key `user_id`)
+- id: r-cons-moderation
+  source: kafka
+  target: svc
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: moderation notices and appeal decisions
+  messaging:
+    role: consumer
+    topic: moderation_events
+  evidence:
+  - path: docs/architecture.md
+    quote: EVT-004 `member_sanction_changed` (topic `moderation_events`, key `community_id`)
+  - path: docs/architecture.md
+    quote: EVT-006 `appeal_status_changed` (topic `moderation_events`, key `community_id`)
+- id: r-cons-social
+  source: kafka
+  target: svc
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: friend request activity
+  messaging:
+    role: consumer
+    topic: social_events
+  evidence:
+  - path: docs/architecture.md
+    quote: EVT-007 `friend_request_changed` (topic `social_events`, key `recipient_user_id`)
+- id: r-cons-message
+  source: kafka
+  target: svc
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: mention detection
+  messaging:
+    role: consumer
+    topic: message_events
+  evidence:
+  - path: docs/architecture.md
+    quote: EVT-009 `message_changed` (topic `message_events`, key `container_id`)
+view:
+  entities:
+  - kafka
+  - members
+  - svc
+  - db
+  - resend
+  groups: []
+  edges:
+  - id: e-caller
+    source: members
+    target: svc
+    relationships:
+    - r-caller
+    label: REST
+    flow: forward
+  - id: e-db
+    source: svc
+    target: db
+    relationships:
+    - r-db
+    label: SQL
+    flow: forward
+  - id: e-resend
+    source: svc
+    target: resend
+    relationships:
+    - r-resend
+    label: Resend SDK
+    flow: forward
+  - id: e-prod
+    source: svc
+    target: kafka
+    relationships:
+    - r-prod
+    label: 'Producers
+
+      notification_service:notification_events'
+    flow: forward
+  - id: e-cons-identity
+    source: kafka
+    target: svc
+    relationships:
+    - r-cons-identity
+    label: 'Consumers
+
+      notification_service:identity_events'
+    flow: feedback
+  - id: e-cons-moderation
+    source: kafka
+    target: svc
+    relationships:
+    - r-cons-moderation
+    label: 'Consumers
+
+      notification_service:moderation_events'
+    flow: feedback
+  - id: e-cons-social
+    source: kafka
+    target: svc
+    relationships:
+    - r-cons-social
+    label: 'Consumers
+
+      notification_service:social_events'
+    flow: feedback
+  - id: e-cons-message
+    source: kafka
+    target: svc
+    relationships:
+    - r-cons-message
+    label: 'Consumers
+
+      notification_service:message_events'
+    flow: feedback
+  omitted: []
