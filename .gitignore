@@ -1,4 +1,5 @@
-server/
+# Compiled binary at the repository root; the service source lives in cmd/server/.
+/server
 *.exe
 *.test
 *.out
