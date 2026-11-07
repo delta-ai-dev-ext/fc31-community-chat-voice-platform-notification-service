@@ -1,0 +1,383 @@
+openapi: "3.0.3"
+info:
+  title: Notification Service API
+  version: "1.0.0"
+  description: >
+    In-app notification inbox and per-kind notification preferences for the
+    community chat & voice platform. In-app notifications and notification
+    emails are produced asynchronously from domain events; this API exposes
+    the member-facing inbox and preference controls.
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: notifications
+  - name: notification-preferences
+  - name: health
+
+paths:
+  /notifications:
+    get:
+      operationId: listNotifications
+      summary: List the caller's notifications newest-first with the unread count
+      tags: [notifications]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: unread_only
+          in: query
+          required: false
+          description: When true, return only notifications that have not been read.
+          schema:
+            type: boolean
+            default: false
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Opaque pagination cursor from a previous response's next_cursor.
+            Invalid or stale cursors are rejected with 400 invalid_cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Page size.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Notification page and current unread count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /notifications/{notification_id}/read:
+    post:
+      operationId: markNotificationRead
+      summary: Mark one notification as read (idempotent)
+      description: >
+        Sets read_at on the notification and returns 204. Repeating the call
+        on an already-read notification returns 204 without changing read_at.
+        A notification belonging to another user is indistinguishable from a
+        missing one (404) and never leaks information.
+      tags: [notifications]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Notification marked read (or already read)
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /notifications/read-all:
+    post:
+      operationId: markAllNotificationsRead
+      summary: Mark every unread notification of the caller as read
+      description: >
+        Sets read_at on all unread notifications of the caller and returns
+        204. Returns 204 and changes nothing when there are no unread items.
+      tags: [notifications]
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: All unread notifications marked read
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /notification-preferences:
+    get:
+      operationId: getNotificationPreferences
+      summary: View the caller's per-kind in-app/email notification toggles
+      description: >
+        Returns all five notification kinds with their in_app and email
+        toggles. Preferences exist for every user; defaults are applied on
+        first access (all kinds in_app: true, email: true).
+      tags: [notification-preferences]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: updateNotificationPreferences
+      summary: Replace the caller's per-kind in-app/email notification toggles
+      description: >
+        Full replacement: the body must contain exactly the five notification
+        kinds, each with in_app and email toggles. Kinds omitted from the
+        body are rejected with 422 invalid_preferences. Stored preference
+        changes apply from the next notification onward. Note: the
+        moderation_notice preference is stored but moderation notices are
+        always delivered in-app and by email regardless of the toggles.
+      tags: [notification-preferences]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferencesUpdate'
+      responses:
+        "200":
+          description: Saved preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe
+      description: >
+        Confirms the process is responsive. Must not fail on transient
+        downstream dependency hiccups. Unauthenticated.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Readiness probe
+      description: >
+        Verifies PostgreSQL and Kafka connectivity before the instance
+        receives traffic; returns 503 once graceful shutdown has started.
+        Unauthenticated.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Service is ready to serve traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        "503":
+          description: Not ready (dependency down or shutting down)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Short-lived access token issued by identity_service, verified locally
+        with identity's public keys. Claims: sub (user_id), sid, email_verified,
+        exp, iat, iss, aud.
+
+  schemas:
+    NotificationKind:
+      type: string
+      enum:
+        - mention
+        - friend_request_received
+        - friend_request_accepted
+        - moderation_notice
+        - appeal_decided
+
+    Notification:
+      type: object
+      required: [id, kind, title, summary, link, created_at, read_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/NotificationKind'
+        title:
+          type: string
+          maxLength: 200
+        summary:
+          type: string
+          maxLength: 500
+        link:
+          type: string
+          description: In-app deep link path, e.g. /channels/{channel_id}/messages/{message_id}.
+        created_at:
+          type: string
+          format: date-time
+        read_at:
+          type: [string, 'null']
+          format: date-time
+          description: Null while the notification is unread.
+
+    NotificationPage:
+      type: object
+      required: [items, next_cursor, unread_count]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        next_cursor:
+          type: [string, 'null']
+          description: Opaque cursor for the next page; null when there are no more items.
+        unread_count:
+          type: integer
+          minimum: 0
+          description: >
+            Total unread notifications of the caller (not limited to the
+            returned page, and not reduced when unread_only filters items).
+
+    KindPreferences:
+      type: object
+      required: [in_app, email]
+      properties:
+        in_app:
+          type: boolean
+          description: Deliver this kind as an in-app notification.
+        email:
+          type: boolean
+          description: Deliver this kind by email (subject to verification status and mention throttling).
+
+    NotificationPreferences:
+      type: object
+      required:
+        - mention
+        - friend_request_received
+        - friend_request_accepted
+        - moderation_notice
+        - appeal_decided
+      properties:
+        mention:
+          $ref: '#/components/schemas/KindPreferences'
+        friend_request_received:
+          $ref: '#/components/schemas/KindPreferences'
+        friend_request_accepted:
+          $ref: '#/components/schemas/KindPreferences'
+        moderation_notice:
+          $ref: '#/components/schemas/KindPreferences'
+        appeal_decided:
+          $ref: '#/components/schemas/KindPreferences'
+
+    NotificationPreferencesUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - mention
+        - friend_request_received
+        - friend_request_accepted
+        - moderation_notice
+        - appeal_decided
+      properties:
+        mention:
+          $ref: '#/components/schemas/KindPreferences'
+        friend_request_received:
+          $ref: '#/components/schemas/KindPreferences'
+        friend_request_accepted:
+          $ref: '#/components/schemas/KindPreferences'
+        moderation_notice:
+          $ref: '#/components/schemas/KindPreferences'
+        appeal_decided:
+          $ref: '#/components/schemas/KindPreferences'
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable error code, snake_case.
+        detail:
+          type: string
+          description: Human-readable explanation.
+
+  responses:
+    BadRequest:
+      description: Request validation failed (e.g. invalid_cursor, malformed id)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, expired, or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Notification not found (or owned by another user)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntity:
+      description: Business rule violation (e.g. invalid_preferences)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
