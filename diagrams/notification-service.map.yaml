@@ -19,7 +19,7 @@ entities:
   kind: broker
   technology: kafka
   role: outbound
-  row: 110
+  row: 75
   evidence:
   - path: docs/architecture.md
     quote: One shared consumer group reading `identity_events`, `moderation_events`
@@ -28,17 +28,19 @@ entities:
   label: Members
   kind: annotation
   role: inbound
-  row: 710
+  row: 588
   evidence:
   - path: docs/user_stories.md
     quote: '**Member**: an authenticated user with an access token issued by identity_service.'
+  - path: docs/openapi_spec.yaml
+    quote: In-app notification inbox and per-kind notification preferences for the
 - id: svc
   name: notification_service
   label: Notification service
   kind: service
   technology: kubernetes-pod
   role: service
-  row: 560
+  row: 540
   evidence:
   - path: docs/architecture.md
     quote: '`notification_service` sends the moderation notice to the affected member.'
@@ -51,21 +53,26 @@ entities:
   kind: database
   technology: postgresql
   role: outbound
-  row: 710
+  row: 498
   evidence:
   - path: docs/architecture.md
     quote: All tables are owned and defined by this service.
+  - path: docs/architecture.md
+    quote: '**Throttling:** at most one mention email per recipient per 15-minute
+      window; the window is persisted in PostgreSQL so it survives restarts.'
 - id: resend
   label: Resend
   kind: annotation
   external: true
   external_role: dependency
   role: outbound
-  row: 780
+  row: 624
   evidence:
   - path: docs/architecture.md
     quote: Send notification emails via Resend according to per-user preferences,
       only to verified emails of active accounts
+  - path: docs/architecture.md
+    quote: Resend integration:** official SDK, idempotency key = notification id
 relationships:
 - id: r-caller
   source: members
@@ -73,7 +80,7 @@ relationships:
   type: request
   interaction:
     channel: direct
-    purpose: inbox and preference requests
+    purpose: inbox listing, read state and per-kind preferences
     protocol: REST
     exchange_id: member-notification-api
   evidence:
@@ -88,6 +95,9 @@ relationships:
   evidence:
   - path: docs/architecture.md
     quote: All tables are owned and defined by this service.
+  - path: docs/architecture.md
+    quote: '**Transactional outbox:** the notification insert and the outbox row commit
+      together'
 - id: r-resend
   source: svc
   target: resend
@@ -148,6 +158,8 @@ relationships:
   evidence:
   - path: docs/architecture.md
     quote: EVT-004 `member_sanction_changed` (topic `moderation_events`, key `community_id`)
+  - path: docs/architecture.md
+    quote: EVT-006 `appeal_status_changed` (topic `moderation_events`, key `community_id`)
 - id: r-cons-social
   source: kafka
   target: svc
@@ -204,7 +216,7 @@ view:
     target: resend
     relationships:
     - r-resend
-    label: Resend
+    label: Resend SDK
     flow: forward
   - id: e-prod
     source: svc
